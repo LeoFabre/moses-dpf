@@ -1,0 +1,9 @@
+build/
+build-arm64/
+.cache/
+.vscode/
+.idea/
+compile_commands.json
+*.vst3
+*.lv2
+test/fixtures/*.wav
