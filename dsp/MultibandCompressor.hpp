@@ -2,6 +2,8 @@
 #include "BandSplitter.hpp"
 #include "BandCompressor.hpp"
 #include "EnvelopeFollower.hpp"
+#include "FastMath.hpp"
+#include "SimdF.hpp"
 #include "DspMath.hpp"
 #include <array>
 #include <cstddef>
@@ -67,6 +69,8 @@ public:
         splitter_.reset();
         for (auto& row : env_)  for (auto& e : row) e.reset();
         for (auto& c   : comp_) c.reset();
+        envLevelL_ = SimdF(0.f);   // SoA envelope state (4 bands per lane)
+        envLevelR_ = SimdF(0.f);
     }
 
     float bandGainReductionDb(int b) const noexcept { return grDb_[b]; }
@@ -86,29 +90,65 @@ public:
                 for (int b = 0; b < kNumBands; ++b) bandBuf_[b][s][c] = bands[b];
             }
         }
-        // 2) Per-band envelope + compression.
-        for (int b = 0; b < kNumBands; ++b) {
-            grDb_[b] = 0.f;
+        // 2) Per-band envelope + compression — all 4 bands processed as one
+        //    SimdF (SoA: band index = lane). The envelope one-pole and the
+        //    collapsed Tier-4a gain computer (fastLog2/fastExp2) run 4-wide.
+        //    This mirrors the scalar path lane-for-lane (it matches up to FMA
+        //    contraction in the polynomials), so the audible output is the
+        //    same as the scalar Tier-4a version — the win is doing the band
+        //    transcendentals in one NEON op instead of four.
+        rebuildBankSimd();   // gather per-band coefs/params into 4-lane vectors
+        SimdF grMin(0.f);    // most-negative grDb per band (starts at 0, like scalar)
+
+        if (stereo_ && numChannels_ == 2) {
             for (std::size_t s = 0; s < n; ++s) {
-                float gainL = 1.f, gainR = 1.f;
-                if (stereo_ && numChannels_ == 2) {
-                    const float maxAbs = std::max(std::abs(bandBuf_[b][s][0]),
-                                                  std::abs(bandBuf_[b][s][1]));
-                    const float env = env_[b][0].tick(maxAbs);
-                    gainL = gainR = comp_[b].computeGain(env);
-                } else {
-                    for (std::size_t c = 0; c < numChannels_; ++c) {
-                        const float env = env_[b][c].tick(std::abs(bandBuf_[b][s][c]));
-                        const float g = comp_[b].computeGain(env);
-                        if (c == 0) gainL = g; else gainR = g;
-                    }
+                float ma[kNumBands];
+                for (int b = 0; b < kNumBands; ++b)
+                    ma[b] = std::max(std::abs(bandBuf_[b][s][0]),
+                                     std::abs(bandBuf_[b][s][1]));
+                const SimdF env = tickEnv(envLevelL_, SimdF::load(ma));
+                SimdF grDb;
+                const SimdF gain = computeGainVec(env, &grDb);
+                float g[kNumBands]; gain.store(g);
+                for (int b = 0; b < kNumBands; ++b) {
+                    bandBuf_[b][s][0] *= g[b];
+                    bandBuf_[b][s][1] *= g[b];
                 }
-                bandBuf_[b][s][0] *= gainL;
-                if (numChannels_ > 1) bandBuf_[b][s][1] *= gainR;
-                if (comp_[b].lastGainReductionDb() < grDb_[b])
-                    grDb_[b] = comp_[b].lastGainReductionDb();
+                grMin = vmin(grMin, grDb);
+            }
+        } else if (numChannels_ == 2) {        // unlinked stereo: per-channel env
+            for (std::size_t s = 0; s < n; ++s) {
+                float aL[kNumBands], aR[kNumBands];
+                for (int b = 0; b < kNumBands; ++b) {
+                    aL[b] = std::abs(bandBuf_[b][s][0]);
+                    aR[b] = std::abs(bandBuf_[b][s][1]);
+                }
+                const SimdF envL = tickEnv(envLevelL_, SimdF::load(aL));
+                SimdF grL; const SimdF gainL = computeGainVec(envL, &grL);
+                const SimdF envR = tickEnv(envLevelR_, SimdF::load(aR));
+                SimdF grR; const SimdF gainR = computeGainVec(envR, &grR);
+                float gL[kNumBands], gR[kNumBands]; gainL.store(gL); gainR.store(gR);
+                for (int b = 0; b < kNumBands; ++b) {
+                    bandBuf_[b][s][0] *= gL[b];
+                    bandBuf_[b][s][1] *= gR[b];
+                }
+                grMin = vmin(grMin, grR);      // scalar tracks the last channel (R)
+            }
+        } else {                                // mono
+            for (std::size_t s = 0; s < n; ++s) {
+                float a[kNumBands];
+                for (int b = 0; b < kNumBands; ++b)
+                    a[b] = std::abs(bandBuf_[b][s][0]);
+                const SimdF env = tickEnv(envLevelL_, SimdF::load(a));
+                SimdF grDb;
+                const SimdF gain = computeGainVec(env, &grDb);
+                float g[kNumBands]; gain.store(g);
+                for (int b = 0; b < kNumBands; ++b)
+                    bandBuf_[b][s][0] *= g[b];
+                grMin = vmin(grMin, grDb);
             }
         }
+        grMin.store(grDb_.data());
         // 3) Mix: listen overrides; kill silences.
         // Per-band enable decision is loop-invariant — hoist it out of the
         // per-sample loop so the inner loop is a branchless sum.
@@ -141,6 +181,50 @@ public:
     }
 
 private:
+    // Gather the scalar per-band coefs/params into 4-lane vectors (band = lane).
+    // Cheap, once per block — the cold-path setters keep the scalar objects as
+    // the single source of truth (incl. the exp()-derived envelope coefs).
+    void rebuildBankSimd() noexcept
+    {
+        float aC[kNumBands], rC[kNumBands], invT[kNumBands], ns[kNumBands], mk[kNumBands];
+        for (int b = 0; b < kNumBands; ++b) {
+            aC[b]   = env_[b][0].attackCoef();      // both channels share coefs
+            rC[b]   = env_[b][0].releaseCoef();
+            invT[b] = comp_[b].invThreshLin();
+            ns[b]   = comp_[b].negSlope();
+            mk[b]   = comp_[b].makeupGain();
+        }
+        attackCoef4_   = SimdF::load(aC);
+        releaseCoef4_  = SimdF::load(rC);
+        invThreshLin4_ = SimdF::load(invT);
+        negSlope4_     = SimdF::load(ns);
+        makeupGain4_   = SimdF::load(mk);
+    }
+
+    // One-pole envelope, 4 bands at once. Mirrors EnvelopeFollower::tick:
+    //   coef = (level < absIn) ? attack : release;  level = absIn + coef*(level-absIn)
+    SimdF tickEnv(SimdF& level, const SimdF& absIn) const noexcept
+    {
+        const SimdF mask = vcmpgt(absIn, level);    // absIn > level  ⇔  level < absIn
+        const SimdF coef = vselect(mask, attackCoef4_, releaseCoef4_);
+        level = absIn + coef * (level - absIn);
+        return level;
+    }
+
+    // Collapsed gain computer, 4 bands at once. Exact vector mirror of
+    // BandCompressor::computeGain. Writes the masked grDb (0 below threshold)
+    // to *grDb and returns the per-band gain.
+    SimdF computeGainVec(const SimdF& env, SimdF* grDb) const noexcept
+    {
+        const SimdF r    = env * invThreshLin4_;            // env / threshLin
+        const SimdF mask = vcmpgt(r, SimdF(1.0f));          // r > 1
+        const SimdF l2   = fastLog2(r);
+        const SimdF grAbove   = negSlope4_ * SimdF(6.0205999133f) * l2;
+        const SimdF gainAbove = makeupGain4_ * fastExp2(negSlope4_ * l2);
+        *grDb = vselect(mask, grAbove, SimdF(0.f));
+        return vselect(mask, gainAbove, makeupGain4_);
+    }
+
     float sampleRate_  = 48000.f;
     std::size_t numChannels_ = 0;
     float xoA_ = 250.f, xoB_ = 75.f, xoC_ = 5000.f;
@@ -158,6 +242,13 @@ private:
 
     std::array<float, kNumBands> grDb_ {0.f,0.f,0.f,0.f};
     std::array<std::array<float, kMaxChannels>, kNumBands> levelOut_ {};
+
+    // SoA hot-path state (band index = SIMD lane). envLevel{L,R}_ persist across
+    // blocks (cleared in reset()); the rest are rebuilt each block from the
+    // scalar param objects by rebuildBankSimd().
+    SimdF envLevelL_, envLevelR_;
+    SimdF attackCoef4_, releaseCoef4_;
+    SimdF invThreshLin4_, negSlope4_, makeupGain4_;
 };
 
 } // namespace moses

@@ -50,6 +50,14 @@ public:
 
     float lastGainReductionDb() const noexcept { return lastGrDb_; }
 
+    // Precomputed coefficients exposed so MultibandCompressor can gather the 4
+    // bands into SimdF lanes and run the collapsed gain computer 4-bands-wide.
+    // The vectorized form in MultibandCompressor mirrors computeGain() exactly,
+    // so it matches lane-for-lane up to FMA contraction in fastLog2/fastExp2.
+    float invThreshLin() const noexcept { return invThreshLin_; }
+    float negSlope()     const noexcept { return negSlope_;     }
+    float makeupGain()   const noexcept { return makeupGain_;   }
+
     void reset() noexcept { lastGrDb_ = 0.f; }
 
 private:

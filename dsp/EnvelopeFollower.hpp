@@ -26,6 +26,14 @@ public:
 
     float level() const noexcept { return level_; }
 
+    // Coefficients exposed so MultibandCompressor can gather the 4 bands into a
+    // SimdF and tick all bands at once (SoA). Both channels of a band share the
+    // same coefs (setBand*Ms updates every channel), so a single 4-lane vector
+    // of these drives the vectorized one-pole. This stays the single source of
+    // truth for the exp()-derived coefs (the cold recompute path is unchanged).
+    float attackCoef()  const noexcept { return attackCoef_;  }
+    float releaseCoef() const noexcept { return releaseCoef_; }
+
 private:
     void recompute() noexcept
     {

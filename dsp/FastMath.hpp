@@ -65,6 +65,16 @@ inline SimdF vmax(const SimdF& a, const SimdF& b) noexcept {
 #endif
 }
 
+inline SimdF vmin(const SimdF& a, const SimdF& b) noexcept {
+#if defined(__ARM_NEON)
+    return SimdF(vminq_f32(a.v, b.v));
+#elif defined(__SSE2__)
+    return SimdF(_mm_min_ps(a.v, b.v));
+#else
+    SimdF r; for (int i=0;i<4;++i) r.v[i] = a.v[i] < b.v[i] ? a.v[i] : b.v[i]; return r;
+#endif
+}
+
 // Mask of lanes where a > b. Representation is backend-specific — only consume
 // it through vselect().
 inline SimdF vcmpgt(const SimdF& a, const SimdF& b) noexcept {
