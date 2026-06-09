@@ -14,6 +14,7 @@ moses_add_test(test_band_splitter)
 moses_add_test(test_envelope)
 moses_add_test(test_compressor)
 moses_add_test(test_gain_approx)
+moses_add_test(test_fastmath_simd)
 moses_add_test(test_multiband)
 
 moses_add_test(test_anti_overlap)
