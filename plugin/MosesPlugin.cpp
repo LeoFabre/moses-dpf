@@ -1,5 +1,6 @@
 #include "MosesPlugin.hpp"
 #include "DspMath.hpp"
+#include "DenormalGuard.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -154,6 +155,7 @@ void MosesPlugin::pushParamsToDsp()
 
 void MosesPlugin::run(const float** inputs, float** outputs, uint32_t frames)
 {
+    ftz::armOnce();
     dsp_.process(inputs, outputs, frames);
     // Write meters back so the host sees them on next poll.
     for (int b = 0; b < moses::kNumBands; ++b) {

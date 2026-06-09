@@ -76,12 +76,12 @@ public:
     float crossoverFreqB() const noexcept { return xoB_; }
     float crossoverFreqC() const noexcept { return xoC_; }
 
-    void process(const float* const* in, float* const* out, std::size_t n) noexcept
+    void process(const float* const* __restrict in, float* const* __restrict out, std::size_t n) noexcept
     {
         // 1) Split into bands.
         for (std::size_t s = 0; s < n; ++s) {
             for (std::size_t c = 0; c < numChannels_; ++c) {
-                std::array<float, kNumBands> bands{};
+                std::array<float, kNumBands> bands;  // all 4 lanes written by processSample
                 splitter_.processSample(c, in[c][s], bands.data());
                 for (int b = 0; b < kNumBands; ++b) bandBuf_[b][s][c] = bands[b];
             }
@@ -110,16 +110,20 @@ public:
             }
         }
         // 3) Mix: listen overrides; kill silences.
+        // Per-band enable decision is loop-invariant — hoist it out of the
+        // per-sample loop so the inner loop is a branchless sum.
         bool anyListen = false;
         for (int b = 0; b < kNumBands; ++b) if (listen_[b]) { anyListen = true; break; }
+        std::array<float, kNumBands> bandEnable;
+        for (int b = 0; b < kNumBands; ++b) {
+            const bool enabled = !kill_[b] && !(anyListen && !listen_[b]);
+            bandEnable[b] = enabled ? 1.f : 0.f;
+        }
         for (std::size_t c = 0; c < numChannels_; ++c) {
             for (std::size_t s = 0; s < n; ++s) {
                 float acc = 0.f;
-                for (int b = 0; b < kNumBands; ++b) {
-                    if (kill_[b]) continue;
-                    if (anyListen && !listen_[b]) continue;
-                    acc += bandBuf_[b][s][c];
-                }
+                for (int b = 0; b < kNumBands; ++b)
+                    acc += bandEnable[b] * bandBuf_[b][s][c];
                 out[c][s] = acc;
             }
         }

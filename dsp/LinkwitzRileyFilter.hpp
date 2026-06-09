@@ -79,7 +79,7 @@ public:
         return x;
     }
 
-    void process(std::size_t channel, const float* in, float* out, std::size_t n) noexcept
+    void process(std::size_t channel, const float* __restrict in, float* __restrict out, std::size_t n) noexcept
     {
         for (std::size_t i = 0; i < n; ++i) out[i] = processSample(channel, in[i]);
     }
@@ -93,15 +93,16 @@ private:
         const float c  = std::cos(w);
         const float s  = std::sin(w);
         const float a  = s * 0.70710678118f;   // alpha = sin(w)/(2Q), Q=1/sqrt(2)
-        const float a0 = 1.0f + a;
-        a1_ = -2.0f * c / a0;
-        a2_ = (1.0f - a) / a0;
-        bLp0_ =  (1.0f - c) * 0.5f / a0;
-        bLp1_ =  (1.0f - c) / a0;
-        bLp2_ =  (1.0f - c) * 0.5f / a0;
-        bHp0_ =  (1.0f + c) * 0.5f / a0;
-        bHp1_ = -(1.0f + c) / a0;
-        bHp2_ =  (1.0f + c) * 0.5f / a0;
+        const float a0  = 1.0f + a;
+        const float inv = 1.0f / a0;
+        a1_ = -2.0f * c * inv;
+        a2_ = (1.0f - a) * inv;
+        bLp0_ =  (1.0f - c) * 0.5f * inv;
+        bLp1_ =  (1.0f - c) * inv;
+        bLp2_ =  (1.0f - c) * 0.5f * inv;
+        bHp0_ =  (1.0f + c) * 0.5f * inv;
+        bHp1_ = -(1.0f + c) * inv;
+        bHp2_ =  (1.0f + c) * 0.5f * inv;
         switch (type_) {
             case Type::lowpass:  b0_=bLp0_; b1_=bLp1_; b2_=bLp2_; break;
             case Type::highpass: b0_=bHp0_; b1_=bHp1_; b2_=bHp2_; break;

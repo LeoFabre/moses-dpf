@@ -58,7 +58,7 @@ public:
         b1Lp_.reset(); b2Hp_.reset(); b3Lp_.reset(); b4Hp_.reset();
     }
 
-    void processSample(std::size_t channel, float x, float* bandsOut) noexcept
+    void processSample(std::size_t channel, float x, float* __restrict bandsOut) noexcept
     {
         const float lowStage  = stage1LowAp_.processSample(channel,
                                   stage1LowLp_.processSample(channel, x));

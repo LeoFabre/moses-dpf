@@ -16,7 +16,7 @@ public:
     float computeGain(float envelope) noexcept
     {
         float grDb = slope_ * (thresholdDb_ - gainToDb(envelope));
-        if (grDb > 0.f) grDb = 0.f;
+        grDb = std::min(grDb, 0.f);
         lastGrDb_ = grDb;
         return dbToGain(grDb + makeupDb_);
     }
