@@ -20,6 +20,10 @@ cmake --build build -j
 
 Artifacts land in `build/bin/Moses.vst3/` and `build/bin/Moses.lv2/`.
 
+## Performance
+
+See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for the Cortex-A53 optimization work and measured gains.
+
 ## DPF revision
 
 Pinned to DPF commit `4238e1c7f0351bbe488d79f0899c540543ac7583`.
