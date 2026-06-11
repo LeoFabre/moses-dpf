@@ -1,6 +1,6 @@
 #pragma once
 
-#define DISTRHO_PLUGIN_BRAND       "Nexus"
+#define DISTRHO_PLUGIN_BRAND       "Dubplex"
 #define DISTRHO_PLUGIN_NAME        "Moses"
 #define DISTRHO_PLUGIN_URI         "https://github.com/lfabre/moses-dpf"
 #define DISTRHO_PLUGIN_CLAP_ID     "fr.nexus.moses"
