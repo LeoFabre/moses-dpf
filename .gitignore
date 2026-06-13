@@ -7,3 +7,4 @@ compile_commands.json
 *.vst3
 *.lv2
 test/fixtures/*.wav
+build-host/

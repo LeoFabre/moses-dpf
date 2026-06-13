@@ -2,6 +2,7 @@
 #include "DspMath.hpp"
 #include "DenormalGuard.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -25,6 +26,13 @@ MosesPlugin::MosesPlugin()
         initParameter(i, tmp);
         paramValues_[i] = tmp.ranges.def;
     }
+    meterSlot_.store((int)paramValues_[kParamMeterSlot], std::memory_order_relaxed);
+
+    // Map the meter shm segment unconditionally here (non-RT, 4 KiB, cheap).
+    // NOT gated on activate(): sushi applies initial_state at a moment that is
+    // not guaranteed to precede activate(), so the slot is claimed lazily from
+    // run() instead. On failure the writer stays disabled for this instance.
+    meter_.map();
 }
 
 void MosesPlugin::initParameter(uint32_t index, Parameter& parameter)
@@ -107,6 +115,17 @@ void MosesPlugin::initParameter(uint32_t index, Parameter& parameter)
         std::snprintf(sym, sizeof sym, "out%u", b);
         initFloat(buf, sym, -60.f, 1.f, -60.f, "dB", false, true); return;
     }
+    if (index == kParamMeterSlot) {
+        // Linear VST3 normalization: norm = (slot + 1) / 32.
+        parameter.name   = "Meter Slot";
+        parameter.symbol = "meter_slot";
+        parameter.unit   = "";
+        parameter.ranges.def = -1.f;
+        parameter.ranges.min = -1.f;
+        parameter.ranges.max = 31.f;
+        parameter.hints  = kParameterIsAutomatable | kParameterIsInteger;
+        return;
+    }
 }
 
 float MosesPlugin::getParameterValue(uint32_t index) const
@@ -119,6 +138,11 @@ void MosesPlugin::setParameterValue(uint32_t index, float value)
 {
     if (index >= kNumParameters) return;
     paramValues_[index] = value;
+    if (index == kParamMeterSlot) {
+        // Cache as atomic int; run() claims the slot lazily (RT-safe).
+        meterSlot_.store((int)std::lround(value), std::memory_order_relaxed);
+        return;
+    }
     pushParamsToDsp();
 }
 
@@ -166,6 +190,26 @@ void MosesPlugin::run(const float** inputs, float** outputs, uint32_t frames)
         const float peakR  = dsp_.bandOutputLevel(b, 1);
         const float peakDb = moses::gainToDb(std::max(peakL, peakR));
         paramValues_[kParamOut1 + b] = moses::clamp(peakDb, -60.f, 1.f);
+    }
+
+    // Shm metering (dsp/MeterShm.hpp): slot < 0 -> single branch, zero cost.
+    // The per-band post-comp peaks and GR are already computed per block by
+    // the DSP (levelOut_/grDb_), so publishing is just atomic stores.
+    const int slot = meterSlot_.load(std::memory_order_relaxed);
+    if (slot >= 0) {
+        if (slot != meterClaimedSlot_) {
+            meter_.claim(slot);          // atomic RMW on mapped memory, RT-safe
+            meterClaimedSlot_ = slot;    // old slot stays claimed (by design)
+        }
+        float v[nxmeter::kSlotValues];
+        for (int b = 0; b < moses::kNumBands; ++b) {
+            // [0..3] per-band post-comp peak |sample| across both channels.
+            v[b] = std::max(dsp_.bandOutputLevel(b, 0),
+                            dsp_.bandOutputLevel(b, 1));
+            // [4..7] per-band gain reduction in dB, >= 0 (0 = none).
+            v[moses::kNumBands + b] = std::max(0.f, -dsp_.bandGainReductionDb(b));
+        }
+        meter_.publish(v, nxmeter::kSlotValues);
     }
 }
 

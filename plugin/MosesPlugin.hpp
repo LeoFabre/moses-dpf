@@ -1,6 +1,8 @@
 #pragma once
 #include "DistrhoPlugin.hpp"
 #include "MultibandCompressor.hpp"
+#include "MeterShm.hpp"
+#include <atomic>
 
 START_NAMESPACE_DISTRHO
 
@@ -21,6 +23,11 @@ enum ParamId : uint32_t {
     kParamOut2,
     kParamOut3,
     kParamOut4,
+    // Shm meter slot (dsp/MeterShm.hpp contract), appended at the END (index
+    // 40) so existing param indices / normalized configs stay valid.
+    // -1 = metering off (default); 0..31 = publish per-band block meters into
+    // that slot of /nexus-meters. Linear VST3 norm = (slot + 1) / 32.
+    kParamMeterSlot,
     kNumParameters
 };
 
@@ -58,6 +65,15 @@ private:
     moses::MultibandCompressor dsp_;
     float paramValues_[kNumParameters] {};
     void pushParamsToDsp();
+
+    // Shm metering. The segment is mapped unconditionally in the constructor
+    // (non-RT, 4 KiB; failure -> writer disabled forever). The slot is read
+    // each run() from meterSlot_ and claimed lazily (RT-safe atomic RMW), so
+    // it works no matter when sushi applies initial_state relative to
+    // activate(). A slot change never unclaims the old slot (see MeterShm.hpp).
+    nxmeter::MeterShmWriter meter_;
+    std::atomic<int> meterSlot_ { -1 };  // param cache, written by setParameterValue
+    int meterClaimedSlot_ = -1;          // run()-local: last slot claimed
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MosesPlugin)
 };

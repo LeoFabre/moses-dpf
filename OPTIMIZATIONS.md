@@ -70,6 +70,18 @@ The per-band(outer)/per-sample(inner) loop was restructured to per-sample with a
 Residual vs the scalar path: **≤ −116.5 dB** worst case; the gentle preset is
 bit-identical.
 
+### Shm metering — zero-cost when off
+
+The `/nexus-meters` writer (`dsp/MeterShm.hpp`, `Meter Slot` param at index 40,
+slot layout: `values[0..3]` = per-band post-comp block peaks, `values[4..7]` =
+per-band GR dB) adds **no per-sample work**: the per-band peaks and GR it
+publishes are the same `levelOut_`/`grDb_` blocks the DSP already computes for
+the OUT/GR output parameters. With `Meter Slot = -1` (default) the run() cost is
+a single relaxed atomic load + branch; with a slot pinned it is 8 relaxed atomic
+stores + 1 release RMW per block on mapped memory (no locks/syscalls/allocation).
+The host A/B test asserts the output audio is bit-identical with metering on vs
+off (`test/test_metershm.cpp`).
+
 ## What was tried and rejected
 
 Nothing significant was abandoned in this repo — the band-parallel structure of a

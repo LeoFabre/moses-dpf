@@ -25,3 +25,21 @@ target_include_directories(test_plugin_offline PRIVATE
     ${CMAKE_SOURCE_DIR}/plugin)
 target_compile_features(test_plugin_offline PRIVATE cxx_std_17)
 add_test(NAME test_plugin_offline COMMAND test_plugin_offline)
+
+# Shm meter writer test: drives the REAL MosesPlugin through DPF's
+# PluginExporter (headless), so it needs the plugin TU + DistrhoPlugin.cpp.
+add_executable(test_metershm
+    test_metershm.cpp
+    ${CMAKE_SOURCE_DIR}/plugin/MosesPlugin.cpp
+    ${CMAKE_SOURCE_DIR}/dpf/distrho/src/DistrhoPlugin.cpp)
+target_include_directories(test_metershm PRIVATE
+    ${CMAKE_SOURCE_DIR}/dsp
+    ${CMAKE_SOURCE_DIR}/plugin
+    ${CMAKE_SOURCE_DIR}/dpf/distrho
+    ${CMAKE_SOURCE_DIR}/dpf/distrho/src)
+target_compile_definitions(test_metershm PRIVATE DISTRHO_PLUGIN_HAS_UI=0)
+target_compile_features(test_metershm PRIVATE cxx_std_17)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_metershm PRIVATE rt) # shm_open on older glibc
+endif()
+add_test(NAME test_metershm COMMAND test_metershm)
